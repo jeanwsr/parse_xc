@@ -1,0 +1,12 @@
+[package]
+name = "parse_xc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+regex = "*"
+#rest_tensors = {path="/home/wsr/rest_workspace/rest_tensors"}
+
+[build-dependencies]
+dunce = "*"
+miette = "*"
