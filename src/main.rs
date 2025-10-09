@@ -50,8 +50,7 @@ impl DFAComponent {
 }
 
 pub fn get_available_functionals() {
-    // let n = unsafe{libxc::ffi_xc::xc_number_of_functionals()};
-    unsafe{libxc::ffi_xc::xc_version()};
+    let n = unsafe{libxc::ffi_xc::xc_number_of_functionals()};
 }
 
 pub fn parse(xc: &str) {
