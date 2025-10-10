@@ -6,7 +6,7 @@ xc String 可以由`,`分割为两个区域，或只有一个区域，不可以�
 
 例如 `0.5*PBE + 0.5*B88, PBE` 或 `B3LYP`。
 
-当有两个区域时，左边为 exchange 区域，右边为 correlation 区域。只有一个区域时，不做区分。
+当有两个区域时，左边为 X(exchange) 区域，右边为 C(correlation) 区域。只有一个区域时，称为 XC 区域。
 
 ## 二级结构
 对于每个区域，可以写成泛函 component 的线性组合。每一项中系数在前，component 名称在后，中间用`*`连接。可以没有系数，视为`1.0`。
@@ -18,7 +18,17 @@ xc String 可以由`,`分割为两个区域，或只有一个区域，不可以�
 ### 名字
 按以下优先级解析
 1. WHITELIST_NONDFA，如 MP2 等，待完善
-2. ALIAS，todo
+2. ALIAS，递归展开 alias，例如 `PBE -> PBE,PBE`。有两个区域时，X/C 区域的 alias 不能展开成其他类型的泛函，例如
+```bash
+> parse_xc "BLYP,"
+Error: functional BLYP is aliased to a different type, which is not allowed in type X
+```
+而 `BLYP` 是合法的
+```bash
+> parse_xc "BLYP"
+factor: 1, func: B88, func_full_name: GGA_X_B88, id: 106
+factor: 1, func: LYP, func_full_name: GGA_C_LYP, id: 131
+```
 3. 其他常规 libxc 泛函
 * 可以是 libxc full name。例如`GGA_X_PBE`。但在 exchange 区域不能出现 correlation 类型的名字，反之亦然。
 * 可以带前缀 `X_`, `C_`, `XC_`。同样，不能出现和区域不符的前缀。
@@ -28,9 +38,9 @@ xc String 可以由`,`分割为两个区域，或只有一个区域，不可以�
 以下是若干示例
 ```bash
 > parse_xc "0.5*PBE + 0.5*B88, PBE(_beta=0.1)"
-X component: Factor: 0.5, Func: PBE, Full Name: GGA_X_PBE, ID: 101
-X component: Factor: 0.5, Func: B88, Full Name: GGA_X_B88, ID: 106
-C component: Factor: 1, Func: PBE, Full Name: GGA_C_PBE, ID: 130, Keyword Params: {"_beta": 0.1}
+factor: 0.5, func: PBE, func_full_name: GGA_X_PBE, id: 101
+factor: 0.5, func: B88, func_full_name: GGA_X_B88, id: 106
+factor: 1, func: PBE, func_full_name: GGA_C_PBE, id: 130, param_keyword: {"_beta": 0.1}
 ```
 不合法的情况
 ```bash

@@ -1,10 +1,10 @@
-use core::{ffi, panic};
+use core::{panic};
 use regex;
-use std::{collections::HashMap};
+use std::collections::HashMap;
 use lazy_static::lazy_static;
-use crate::libxc::ffi_xc;
 mod libxc;
-// use libxc::ffi_xc::{xc_number_of_functionals};
+mod xc_helper;
+use xc_helper::{AVAIL_FUNC, ALIAS};
 
 fn main() {
     // println!("Hello, world!");
@@ -12,9 +12,13 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let name = &args[1];
     println!("parsing xc: {}", name);
-    parse(name);
+    let final_components = parse(name);
+    final_components.iter().for_each(|c| {
+        println!("{}", c.formatted_output());
+    });
 }
 
+#[derive(Clone)]
 pub struct DFAComponent {
     pub factor: f64,
     pub func: String,
@@ -26,9 +30,6 @@ pub struct DFAComponent {
 
 const WHITELIST_NONDFA:[&str;2] = ["MP2", "HF"];
 
-lazy_static! {
-    static ref AVAIL_FUNC : HashMap<String, i32> = get_available_functionals();
-}
 
 impl DFAComponent {
     pub fn new(factor: f64, func: String) -> Self {
@@ -44,20 +45,24 @@ impl DFAComponent {
 
     pub fn formatted_output(&self) -> String {
         // output line by line
-        let mut result = format!("Factor: {}, Func: {}", self.factor, self.func);
+        let mut result = format!("factor: {}, func: {}", self.factor, self.func);
         if !self.func_full_name.is_empty() {
-            result.push_str(&format!(", Full Name: {}", self.func_full_name));
+            result.push_str(&format!(", func_full_name: {}", self.func_full_name));
         }
         if self.id != 0 {
-            result.push_str(&format!(", ID: {}", self.id));
+            result.push_str(&format!(", id: {}", self.id));
         }
         if !self.param_positional.is_empty() {
-            result.push_str(&format!(", Positional Params: {:?}", self.param_positional));
+            result.push_str(&format!(", param_positional: {:?}", self.param_positional));
         }
         if !self.param_keyword.is_empty() {
-            result.push_str(&format!(", Keyword Params: {:?}", self.param_keyword));
+            result.push_str(&format!(", param_keyword: {:?}", self.param_keyword));
         }
         result
+    }
+
+    pub fn has_parameter(&self) -> bool {
+        !self.param_keyword.is_empty() || !self.param_positional.is_empty()
     }
 
     pub fn to_valid_name(&mut self, functype: &str) -> &mut Self {
@@ -65,8 +70,6 @@ impl DFAComponent {
         if WHITELIST_NONDFA.contains(&self.func.as_str()) {
             return self;
         }
-        // check alias
-        // todo!();
         // check pre-defined codes
         // todo!();
 
@@ -94,7 +97,9 @@ impl DFAComponent {
                 panic!("Error: functional {} has illegal prefix for type {}", self.func, functype);
             }
         }
-        // condition 2
+        // end of condition 1
+
+        // condition 2,3
         // check if self.func starts with any of the illegal_prefix
         for p in illegal_prefix.iter() {
             if self.func.starts_with(p) {
@@ -114,17 +119,17 @@ impl DFAComponent {
         let matches: Vec<_> = possible_full_names.into_iter()
             .filter(|name| AVAIL_FUNC.contains_key(name))
             .collect();
-        // if matches is empty, panic
+
         if matches.is_empty() {
-            panic!("Error: functional {} not found in libxc", tmp_func);
+            // panic!("Error: functional {} not found in libxc", tmp_func);
+            // do nothing, leave id as 0
         } else if matches.len() == 1 {
             self.func_full_name = matches[0].clone();
             self.id = *AVAIL_FUNC.get(&self.func_full_name).unwrap();
         } else {
-            // if more than one match, panic
             panic!("Error: functional {} is ambiguous, possible matches: {:?}", tmp_func, matches);
         }
-        
+        // end of condition 2,3
         
         return self;
     }
@@ -170,25 +175,47 @@ pub fn get_possible_prefix(functype: &str) -> (Vec<&'static str>, Vec<&'static s
     (possible_prefix, illegal_prefix)
 }
 
-pub fn get_available_functionals() -> HashMap<String, i32> {
-    let n = unsafe{libxc::ffi_xc::xc_number_of_functionals()};
-    println!("Number of functionals in libxc: {}", n);
-    // empty vector with length n
-    let mut ids:Vec<i32> = vec![0; n as usize];
-    unsafe{
-        libxc::ffi_xc::xc_available_functional_numbers(ids.as_mut_ptr());
+pub fn check_type_sanity(name: &str, functype: &str) -> bool {
+    let mut sanity = true;
+    let parts: Vec<&str> = name.split(',').collect();
+    let n_part_notempty = parts.iter().filter(|p| !p.trim().is_empty()).count();
+    if (functype == "X" || functype == "C") && n_part_notempty > 1 {
+        sanity =  false;
     }
-    // println!("{:?}", ids);
-    let mut available_functionals = HashMap::new();
-    for id in ids {
-        let name = unsafe{
-            let c_str = ffi::CStr::from_ptr(libxc::ffi_xc::xc_functional_get_name(id));
-            c_str.to_str().unwrap().to_owned()
-        };
-        available_functionals.insert(name.to_uppercase(), id);
+    sanity
+}
+
+
+pub fn parse_tokens(mut components: Vec<DFAComponent>, functype: &str) -> Vec<DFAComponent> {
+    let mut result = Vec::new();
+    for comp in components.iter_mut() {
+        comp.to_valid_name(functype);
+        // filter with ALIAS
+        if comp.id != 0 {
+            result.push(comp.clone());
+        } else if ALIAS.contains_key(comp.func.as_str()) {
+            if comp.has_parameter() {
+                panic!("Error: functional {} has parameters, cannot be filtered by alias", comp.func);
+            }
+            let alias_xc = ALIAS.get(comp.func.as_str()).unwrap();
+            // check if X func is aliased to XC
+            if !check_type_sanity(alias_xc, functype) {
+                panic!("Error: functional {} is aliased to a different type, which is not allowed in type {}", comp.func, functype);
+            }
+            let alias_components = parse(alias_xc);
+            for mut alias_comp in alias_components {
+                alias_comp.factor *= comp.factor;
+                result.push(alias_comp);
+            }   
+        } else {
+            // result.push(comp.clone());
+            panic!("Error: functional {} not found in libxc and not in alias list", comp.func);
+        }
     }
-    // println!("Available functionals: {:?}", available_functionals);
-    available_functionals
+    // for comp in result.iter_mut() {
+    //     comp.to_valid_name(functype);
+    // }
+    result
 }
 
 pub fn parse(xc: &str) -> Vec<DFAComponent> {
@@ -199,31 +226,27 @@ pub fn parse(xc: &str) -> Vec<DFAComponent> {
     if parts.len() == 2 {
         let (xfac, xfuncs, xparams) = parse_pass3(parts[0], &captures);
         let mut x_components:Vec<DFAComponent> = to_dfa_component_raw(xfac, xfuncs, xparams);
-        for comp in x_components.iter_mut() {
-            comp.to_valid_name("X");
-        }
+        x_components = parse_tokens(x_components, "X");
+        
         let (cfac, cfuncs, cparams) = parse_pass3(parts[1], &captures);
         let mut c_components:Vec<DFAComponent> = to_dfa_component_raw(cfac, cfuncs, cparams);
-        for comp in c_components.iter_mut() {
-            comp.to_valid_name("C");
-        }
-        x_components.iter().for_each(|c| {
-            println!("X component: {}", c.formatted_output());
-        });
-        c_components.iter().for_each(|c| {
-            println!("C component: {}", c.formatted_output());
-        });
+        c_components = parse_tokens(c_components, "C");
+
+        // x_components.iter().for_each(|c| {
+        //     println!("X component: {}", c.formatted_output());
+        // });
+        // c_components.iter().for_each(|c| {
+        //     println!("C component: {}", c.formatted_output());
+        // });
         final_components.extend(x_components);
         final_components.extend(c_components);
     } else {
         let (xcfac, xcfuncs, xcparams) = parse_pass3(parts[0], &captures);
         let mut xc_components:Vec<DFAComponent> = to_dfa_component_raw(xcfac, xcfuncs, xcparams);
-        for comp in xc_components.iter_mut() {
-            comp.to_valid_name("XC");
-        }
-        xc_components.iter().for_each(|c| {
-            println!("XC component: {}", c.formatted_output());
-        });
+        xc_components = parse_tokens(xc_components, "XC");
+        // xc_components.iter().for_each(|c| {
+        //     println!("XC component: {}", c.formatted_output());
+        // });
         final_components.extend(xc_components);
     }
     final_components
@@ -282,7 +305,7 @@ pub fn parse_pass3(xc: &str, param_captures: &Vec<String>) -> (Vec<f64>, Vec<Str
             cap[1].parse::<f64>().unwrap()
         };
         fac.push(factor);
-        funcs.push(cap[2].to_string());
+        funcs.push(cap[2].to_string().to_uppercase());
     }
     // println!("pass3");
     // println!("factors: {:?}", fac);

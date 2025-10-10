@@ -1,5 +1,5 @@
 extern crate dunce;
-use std::{env, fs};
+use std::{env};
 use std::path::PathBuf;
 
 fn main() -> miette::Result<()> {
