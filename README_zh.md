@@ -16,7 +16,10 @@ xc String 可以由`,`分割为两个区域，或只有一个区域，不可以�
 ## 三级结构
 对于每个泛函 component，做如下规定。
 ### 名字
-
+按以下优先级解析
+1. WHITELIST_NONDFA，如 MP2 等，待完善
+2. ALIAS，todo
+3. 其他常规 libxc 泛函
 * 可以是 libxc full name。例如`GGA_X_PBE`。但在 exchange 区域不能出现 correlation 类型的名字，反之亦然。
 * 可以带前缀 `X_`, `C_`, `XC_`。同样，不能出现和区域不符的前缀。
 * 可以不带前缀，例如`PBE`。根据其所处的区域，视为带有 `X_`, `C_` 或 `XC_`前缀。
@@ -24,7 +27,7 @@ xc String 可以由`,`分割为两个区域，或只有一个区域，不可以�
 
 以下是若干示例
 ```bash
-> parse_xc "0.5*PBE + 0.5*B88, PBE(_beta=0.1)"                                     ✔  base  
+> parse_xc "0.5*PBE + 0.5*B88, PBE(_beta=0.1)"
 X component: Factor: 0.5, Func: PBE, Full Name: GGA_X_PBE, ID: 101
 X component: Factor: 0.5, Func: B88, Full Name: GGA_X_B88, ID: 106
 C component: Factor: 1, Func: PBE, Full Name: GGA_C_PBE, ID: 130, Keyword Params: {"_beta": 0.1}
