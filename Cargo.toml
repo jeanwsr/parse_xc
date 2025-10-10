@@ -1,11 +1,12 @@
 [package]
 name = "parse_xc"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 regex = "*"
 #rest_tensors = {path="/home/wsr/rest_workspace/rest_tensors"}
+lazy_static = "*"
 
 [build-dependencies]
 dunce = "*"

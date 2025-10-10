@@ -1,6 +1,8 @@
 use core::{ffi, panic};
 use regex;
-use std::collections::HashMap;
+use std::{collections::HashMap};
+use lazy_static::lazy_static;
+use crate::libxc::ffi_xc;
 mod libxc;
 // use libxc::ffi_xc::{xc_number_of_functionals};
 
@@ -16,16 +18,39 @@ fn main() {
 pub struct DFAComponent {
     pub factor: f64,
     pub func: String,
+    pub func_full_name: String,
+    pub id: i32,
     pub param_positional: Vec<f64>,
     pub param_keyword: HashMap<String, f64>,
 }
 
 const WHITELIST_NONDFA:[&str;2] = ["MP2", "HF"];
 
+lazy_static! {
+    static ref AVAIL_FUNC : HashMap<String, i32> = get_available_functionals();
+}
+
 impl DFAComponent {
+    pub fn new(factor: f64, func: String) -> Self {
+        DFAComponent {
+            factor,
+            func,
+            func_full_name: String::new(),
+            id: 0,
+            param_positional: Vec::new(),
+            param_keyword: HashMap::new(),
+        }
+    }
+
     pub fn formatted_output(&self) -> String {
         // output line by line
         let mut result = format!("Factor: {}, Func: {}", self.factor, self.func);
+        if !self.func_full_name.is_empty() {
+            result.push_str(&format!(", Full Name: {}", self.func_full_name));
+        }
+        if self.id != 0 {
+            result.push_str(&format!(", ID: {}", self.id));
+        }
         if !self.param_positional.is_empty() {
             result.push_str(&format!(", Positional Params: {:?}", self.param_positional));
         }
@@ -42,21 +67,135 @@ impl DFAComponent {
         }
         // check alias
         // todo!();
-        // search libxc full name
+        // check pre-defined codes
         // todo!();
+
+        // search libxc full name
+        // let prefix = format!("{}_", functype);
+        let prefix = format!("{}_", functype);
+        let illegal_prefix = ILLEGAL_SHORT_PREFIX.get(functype).unwrap();
+        let (possible_complete_prefix, illegal_complete_prefix) = get_possible_prefix(&functype);
+        // condition 1
+        // check if self.func starts with any of the possible_complete_prefix
+        // let mut full_name = String::new();
+        for p in possible_complete_prefix.iter() {
+            if self.func.starts_with(p) {
+                self.func_full_name = self.func.clone();
+                if let Some(id) = AVAIL_FUNC.get(&self.func_full_name) {
+                    self.id = *id;
+                } else {
+                    panic!("Error: functional {} not found in libxc", self.func_full_name);
+                }
+                break;
+            } 
+        }
+        for p in illegal_complete_prefix.iter() {
+            if self.func.starts_with(p) {
+                panic!("Error: functional {} has illegal prefix for type {}", self.func, functype);
+            }
+        }
+        // condition 2
+        // check if self.func starts with any of the illegal_prefix
+        for p in illegal_prefix.iter() {
+            if self.func.starts_with(p) {
+                panic!("Error: functional {} has illegal prefix for type {}", self.func, functype);
+            }
+        }
+        // if self.func starts with prefix, remove it
+        let mut tmp_func = self.func.clone();
+        if self.func.starts_with(&prefix) {
+            tmp_func = self.func.trim_start_matches(&prefix).to_string();
+        }
+        // generate all possible full names
+        let possible_full_names: Vec<String> = possible_complete_prefix.iter().map(|p| {
+            format!("{}{}", p, tmp_func)
+        }).collect();
+        // search in AVAIL_FUNC
+        let matches: Vec<_> = possible_full_names.into_iter()
+            .filter(|name| AVAIL_FUNC.contains_key(name))
+            .collect();
+        // if matches is empty, panic
+        if matches.is_empty() {
+            panic!("Error: functional {} not found in libxc", tmp_func);
+        } else if matches.len() == 1 {
+            self.func_full_name = matches[0].clone();
+            self.id = *AVAIL_FUNC.get(&self.func_full_name).unwrap();
+        } else {
+            // if more than one match, panic
+            panic!("Error: functional {} is ambiguous, possible matches: {:?}", tmp_func, matches);
+        }
+        
+        
         return self;
     }
     
 }
 
-pub fn get_available_functionals() {
-    let n = unsafe{libxc::ffi_xc::xc_number_of_functionals()};
+lazy_static! {
+    static ref POSSIBLE_PREFIX: HashMap<&'static str, Vec<&'static str>> = HashMap::from([
+        ("X", vec!["LDA_X_", "GGA_X_", "MGGA_X_", "HYB_GGA_X_", "HYB_MGGA_X_"]),
+        ("C", vec!["LDA_C_", "GGA_C_", "MGGA_C_"]),
+        ("XC", vec!["LDA_XC_", "GGA_XC_", "MGGA_XC_", "HYB_LDA_XC_", "HYB_GGA_XC_", "HYB_MGGA_XC_"]),
+    ]);
+    static ref ILLEGAL_SHORT_PREFIX: HashMap<&'static str, Vec<&'static str>> = HashMap::from([
+        ("X", vec!["C_", "XC_"]),
+        ("C", vec!["X_", "XC_"]),
+        ("XC", vec!["X_", "C_"]),
+        ("any", vec![]),
+    ]);
 }
 
-pub fn parse(xc: &str) {
-    get_available_functionals();
+pub fn get_possible_prefix(functype: &str) -> (Vec<&'static str>, Vec<&'static str>) {
+    let mut possible_prefix = Vec::new();
+    let mut illegal_prefix = Vec::new();
+    if functype == "X" {
+        possible_prefix = POSSIBLE_PREFIX.get("X").unwrap().clone();
+        illegal_prefix = POSSIBLE_PREFIX.get("C").unwrap().clone();
+        illegal_prefix.extend(POSSIBLE_PREFIX.get("XC").unwrap().clone());
+    } else if functype == "C" {
+        possible_prefix = POSSIBLE_PREFIX.get("C").unwrap().clone();
+        illegal_prefix = POSSIBLE_PREFIX.get("X").unwrap().clone();
+        illegal_prefix.extend(POSSIBLE_PREFIX.get("XC").unwrap().clone());
+    } else if functype == "XC" {
+        possible_prefix = POSSIBLE_PREFIX.get("XC").unwrap().clone();
+        illegal_prefix = POSSIBLE_PREFIX.get("X").unwrap().clone();
+        illegal_prefix.extend(POSSIBLE_PREFIX.get("C").unwrap().clone());
+    } else if functype == "any" {
+        possible_prefix = POSSIBLE_PREFIX.get("X").unwrap().clone();
+        possible_prefix.extend(POSSIBLE_PREFIX.get("C").unwrap().clone());
+        possible_prefix.extend(POSSIBLE_PREFIX.get("XC").unwrap().clone());
+    } else {
+        panic!("Error: unknown functype {}", functype);
+    }
+    (possible_prefix, illegal_prefix)
+}
+
+pub fn get_available_functionals() -> HashMap<String, i32> {
+    let n = unsafe{libxc::ffi_xc::xc_number_of_functionals()};
+    println!("Number of functionals in libxc: {}", n);
+    // empty vector with length n
+    let mut ids:Vec<i32> = vec![0; n as usize];
+    unsafe{
+        libxc::ffi_xc::xc_available_functional_numbers(ids.as_mut_ptr());
+    }
+    // println!("{:?}", ids);
+    let mut available_functionals = HashMap::new();
+    for id in ids {
+        let name = unsafe{
+            let c_str = ffi::CStr::from_ptr(libxc::ffi_xc::xc_functional_get_name(id));
+            c_str.to_str().unwrap().to_owned()
+        };
+        available_functionals.insert(name.to_uppercase(), id);
+    }
+    // println!("Available functionals: {:?}", available_functionals);
+    available_functionals
+}
+
+pub fn parse(xc: &str) -> Vec<DFAComponent> {
+    // let available_functionals = get_available_functionals();
     let (xc_pass1, captures) = parse_pass1(xc);
     let parts = parse_pass2(&xc_pass1);
+    let mut final_components:Vec<DFAComponent> = Vec::new();
     if parts.len() == 2 {
         let (xfac, xfuncs, xparams) = parse_pass3(parts[0], &captures);
         let mut x_components:Vec<DFAComponent> = to_dfa_component_raw(xfac, xfuncs, xparams);
@@ -74,6 +213,8 @@ pub fn parse(xc: &str) {
         c_components.iter().for_each(|c| {
             println!("C component: {}", c.formatted_output());
         });
+        final_components.extend(x_components);
+        final_components.extend(c_components);
     } else {
         let (xcfac, xcfuncs, xcparams) = parse_pass3(parts[0], &captures);
         let mut xc_components:Vec<DFAComponent> = to_dfa_component_raw(xcfac, xcfuncs, xcparams);
@@ -83,7 +224,9 @@ pub fn parse(xc: &str) {
         xc_components.iter().for_each(|c| {
             println!("XC component: {}", c.formatted_output());
         });
+        final_components.extend(xc_components);
     }
+    final_components
 }
 
 pub fn parse_pass1(xc: &str) -> (String, Vec<String>) {
@@ -180,12 +323,9 @@ pub fn to_dfa_component_raw(fac: Vec<f64>, funcs: Vec<String>, params: Vec<Strin
     let mut components = Vec::new();
     for i in 0..fac.len() {
         let (param_keyword, param_positional) = parse_arguments(&params[i]);
-        let component = DFAComponent {
-            factor: fac[i],
-            func: funcs[i].clone(),
-            param_positional,
-            param_keyword,
-        };
+        let mut component = DFAComponent::new(fac[i], funcs[i].clone());
+        component.param_keyword = param_keyword;
+        component.param_positional = param_positional;
         components.push(component);
     }
     components
@@ -222,4 +362,17 @@ fn parse_arguments(input: &str) -> (HashMap<String, f64>, Vec<f64>) {
     }
 
     (keyword_args, positional_args)
+}
+
+#[test]
+fn test_parse_arguments() {
+    let input1 = "0.5*PBE + 0.5*B88, PBE(_beta=0.1)";
+    let final_components = parse(input1);
+    assert_eq!(final_components.len(), 3);
+    assert_eq!(final_components[0].factor, 0.5);
+    assert_eq!(final_components[0].id, 101);
+    assert_eq!(final_components[1].id, 106);
+    assert_eq!(final_components[2].factor, 1.0);
+    assert_eq!(final_components[2].id, 130);
+    assert!(final_components[2].param_keyword.get("_beta").unwrap() - 0.1 < 1e-9);
 }
