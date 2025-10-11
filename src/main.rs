@@ -4,19 +4,19 @@ use std::collections::HashMap;
 use lazy_static::lazy_static;
 mod libxc;
 mod xc_helper;
-use xc_helper::{AVAIL_FUNC, ALIAS};
+use xc_helper::{AVAIL_FUNC, ALIAS, CODES, WHITELIST_NONLIBXC, ComponentType, 
+    get_name, MULTISTEP, XC2step};
 
 fn main() {
     // println!("Hello, world!");
     // get a string from command line
     let args: Vec<String> = std::env::args().collect();
     let name = &args[1];
-    println!("parsing xc: {}", name);
-    let final_components = parse(name);
-    final_components.iter().for_each(|c| {
-        println!("{}", c.formatted_output());
-    });
+    // println!("parsing xc: {}", name);
+    let final_results = parse(name);
 }
+
+
 
 #[derive(Clone)]
 pub struct DFAComponent {
@@ -26,9 +26,10 @@ pub struct DFAComponent {
     pub id: i32,
     pub param_positional: Vec<f64>,
     pub param_keyword: HashMap<String, f64>,
+    pub component_type: ComponentType,
 }
 
-const WHITELIST_NONDFA:[&str;2] = ["MP2", "HF"];
+// const WHITELIST_NONDFA:[&str;2] = ["MP2", "HF"];
 
 
 impl DFAComponent {
@@ -40,12 +41,13 @@ impl DFAComponent {
             id: 0,
             param_positional: Vec::new(),
             param_keyword: HashMap::new(),
+            component_type: ComponentType::Unknown,
         }
     }
 
     pub fn formatted_output(&self) -> String {
         // output line by line
-        let mut result = format!("factor: {}, func: {}", self.factor, self.func);
+        let mut result = format!("component_type: {} factor: {}, func: {}", self.component_type.as_str(), self.factor, self.func);
         if !self.func_full_name.is_empty() {
             result.push_str(&format!(", func_full_name: {}", self.func_full_name));
         }
@@ -65,13 +67,24 @@ impl DFAComponent {
         !self.param_keyword.is_empty() || !self.param_positional.is_empty()
     }
 
+    pub fn is_unknown(&self) -> bool {
+        self.component_type == ComponentType::Unknown
+    }
+
     pub fn to_valid_name(&mut self, functype: &str) -> &mut Self {
         // check whitelist
-        if WHITELIST_NONDFA.contains(&self.func.as_str()) {
+        if WHITELIST_NONLIBXC.contains_key(self.func.as_str()) {
+            self.component_type = WHITELIST_NONLIBXC.get(self.func.as_str()).unwrap().clone();
             return self;
         }
         // check pre-defined codes
-        // todo!();
+        if CODES.contains_key(self.func.as_str()) {
+            let code = CODES.get(self.func.as_str()).unwrap();
+            self.func_full_name = get_name(*code);
+            self.id = *code;
+            self.component_type = ComponentType::Libxc;
+            return self;
+        }
 
         // search libxc full name
         // let prefix = format!("{}_", functype);
@@ -86,6 +99,7 @@ impl DFAComponent {
                 self.func_full_name = self.func.clone();
                 if let Some(id) = AVAIL_FUNC.get(&self.func_full_name) {
                     self.id = *id;
+                    self.component_type = ComponentType::Libxc;
                 } else {
                     panic!("Error: functional {} not found in libxc", self.func_full_name);
                 }
@@ -126,6 +140,7 @@ impl DFAComponent {
         } else if matches.len() == 1 {
             self.func_full_name = matches[0].clone();
             self.id = *AVAIL_FUNC.get(&self.func_full_name).unwrap();
+            self.component_type = ComponentType::Libxc;
         } else {
             panic!("Error: functional {} is ambiguous, possible matches: {:?}", tmp_func, matches);
         }
@@ -190,8 +205,8 @@ pub fn parse_tokens(mut components: Vec<DFAComponent>, functype: &str) -> Vec<DF
     let mut result = Vec::new();
     for comp in components.iter_mut() {
         comp.to_valid_name(functype);
-        // filter with ALIAS
-        if comp.id != 0 {
+        
+        if !comp.is_unknown() {
             result.push(comp.clone());
         } else if ALIAS.contains_key(comp.func.as_str()) {
             if comp.has_parameter() {
@@ -202,14 +217,14 @@ pub fn parse_tokens(mut components: Vec<DFAComponent>, functype: &str) -> Vec<DF
             if !check_type_sanity(alias_xc, functype) {
                 panic!("Error: functional {} is aliased to a different type, which is not allowed in type {}", comp.func, functype);
             }
-            let alias_components = parse(alias_xc);
+            let alias_components = parse_1step(alias_xc);
             for mut alias_comp in alias_components {
                 alias_comp.factor *= comp.factor;
                 result.push(alias_comp);
             }   
         } else {
             // result.push(comp.clone());
-            panic!("Error: functional {} not found in libxc and not in alias list", comp.func);
+            panic!("Error: functional {} not found in libxc and not in alias/whitelist", comp.func);
         }
     }
     // for comp in result.iter_mut() {
@@ -218,7 +233,53 @@ pub fn parse_tokens(mut components: Vec<DFAComponent>, functype: &str) -> Vec<DF
     result
 }
 
-pub fn parse(xc: &str) -> Vec<DFAComponent> {
+pub enum ParsedResult {
+    VecDFAComponent(Vec<DFAComponent>),
+    DFA2step(DFA2step),
+}
+
+pub struct DFA2step {
+    pub xc_scf: Vec<DFAComponent>,
+    pub xc: Vec<DFAComponent>,
+    pub reference: String,
+}
+
+pub fn parse(xc: &str) -> ParsedResult {
+    println!("Parsing xc: {}", xc);
+    // check MULTISTEP
+    if MULTISTEP.contains_key(xc) {
+        let steps = MULTISTEP.get(xc).unwrap();
+        println!("Detected multi-step functional {}, which is parsed to:", xc);
+        println!("Step for SCF         : {}", steps.code_scf);
+        println!("Step for final energy: {}", steps.code);
+        println!("Reference: {}", steps.reference);
+        let final_components_scf = parse_1step(&steps.code_scf);
+        println!("Components for SCF:");
+        final_components_scf.iter().for_each(|c| {
+            println!("{}", c.formatted_output());
+        });
+        let final_components = parse_1step(&steps.code);
+        println!("Components for final energy:");
+        final_components.iter().for_each(|c| {
+            println!("{}", c.formatted_output());
+        });
+        let dfa_steps = DFA2step {
+            xc_scf: final_components_scf,
+            xc: final_components,
+            reference: steps.reference.clone(),
+        };
+        return ParsedResult::DFA2step(dfa_steps);
+    } else {
+        let final_components = parse_1step(xc);
+        final_components.iter().for_each(|c| {
+            println!("{}", c.formatted_output());
+        });
+        return ParsedResult::VecDFAComponent(final_components);
+    }
+
+}
+
+pub fn parse_1step(xc: &str) -> Vec<DFAComponent> {
     // let available_functionals = get_available_functionals();
     let (xc_pass1, captures) = parse_pass1(xc);
     let parts = parse_pass2(&xc_pass1);
@@ -295,14 +356,16 @@ pub fn parse_pass3(xc: &str, param_captures: &Vec<String>) -> (Vec<f64>, Vec<Str
     let mut fac = Vec::new();
     let mut funcs = Vec::new();
     // let re = regex::Regex::new("([+-]?\\d*\\.?\\d*)\\*([A-Za-z0-9_:]+)").unwrap();
-    let re = regex::Regex::new(r"([+-]?\d*\.?\d*)\*?([A-Za-z0-9_:]+)").unwrap();
+    let re = regex::Regex::new(r"([+-]?\s?\d*\.?\d*)\s?\*?\s?([A-Za-z0-9_:]+)").unwrap();
     for cap in re.captures_iter(xc) {
-        let factor = if &cap[1] == "" || &cap[1] == "+" {
+        //remove whitespace in cap[1]
+        let cap1 = cap[1].replace(" ", "");
+        let factor = if &cap1 == "" || &cap1 == "+" {
             1.0
-        } else if &cap[1] == "-" {
+        } else if &cap1 == "-" {
             -1.0
         } else {
-            cap[1].parse::<f64>().unwrap()
+            cap1.parse::<f64>().unwrap()
         };
         fac.push(factor);
         funcs.push(cap[2].to_string().to_uppercase());
@@ -388,9 +451,9 @@ fn parse_arguments(input: &str) -> (HashMap<String, f64>, Vec<f64>) {
 }
 
 #[test]
-fn test_parse_arguments() {
+fn test_parse_xc_param() {
     let input1 = "0.5*PBE + 0.5*B88, PBE(_beta=0.1)";
-    let final_components = parse(input1);
+    let final_components = parse_1step(input1);
     assert_eq!(final_components.len(), 3);
     assert_eq!(final_components[0].factor, 0.5);
     assert_eq!(final_components[0].id, 101);
@@ -398,4 +461,26 @@ fn test_parse_arguments() {
     assert_eq!(final_components[2].factor, 1.0);
     assert_eq!(final_components[2].id, 130);
     assert!(final_components[2].param_keyword.get("_beta").unwrap() - 0.1 < 1e-9);
+}
+
+#[test]
+fn test_parse_xc_hybrid() {
+    let input1 = ".2*HF + 0.08*LDA + 0.72*B88, 0.81*LYP + 0.19*VWN3";
+    let final_components = parse_1step(input1);
+    assert_eq!(final_components.len(), 5);
+    assert_eq!(final_components[0].component_type, ComponentType::HF);
+    assert_eq!(final_components[0].factor, 0.2);
+    assert_eq!(final_components[1].id, 1);
+    assert_eq!(final_components[2].id, 106);
+    assert_eq!(final_components[3].id, 131);
+    assert_eq!(final_components[4].id, 8);
+}
+
+#[test]
+fn test_pass3_lincomb() {
+    let input = "K1 + 0.5*K2 - 0.5*K3 + K4 - K5 +0.111*K6 -21*K_7";
+    let param_captures = vec![];
+    let (fac, funcs, _params) = parse_pass3(input, &param_captures);
+    assert_eq!(fac, vec![1.0, 0.5, -0.5, 1.0, -1.0, 0.111, -21.0]);
+    assert_eq!(funcs, vec!["K1", "K2", "K3", "K4", "K5", "K6", "K_7"]);
 }

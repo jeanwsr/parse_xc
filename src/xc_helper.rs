@@ -4,9 +4,46 @@ use super::libxc;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::ffi;
+use serde_json;
+
+#[derive(Clone,PartialEq,Debug)]
+pub enum ComponentType {
+    HF,
+    PT2,
+    RPA,
+    Disp,
+    Libxc,
+    Unknown,
+}
+
+impl ComponentType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ComponentType::HF => "HF",
+            ComponentType::PT2 => "PT2",
+            ComponentType::RPA => "RPA",
+            ComponentType::Disp => "Disp",
+            ComponentType::Libxc => "Libxc",
+            ComponentType::Unknown => "Unknown",
+        }
+    }
+}
 
 lazy_static! {
     pub static ref AVAIL_FUNC : HashMap<String, i32> = get_available_functionals();
+
+    pub static ref CODES: HashMap<&'static str, i32> = HashMap::from([
+        // LDA
+        ("LDA", 1),
+        ("SLATER", 1),
+        ("VWN3", 8),
+        ("VWNRPA", 8),
+        ("VWN5", 7),
+        // HYB_GGA
+        ("PBE0", 406),
+        ("B3LYPG", 402),
+        ("X3LYPG", 411),
+    ]);
 
     pub static ref ALIAS: HashMap<&'static str, &'static str> = HashMap::from([
         // LDA
@@ -75,9 +112,24 @@ lazy_static! {
         ("M05_2X", "M05_2X,M05_2X"),
         ("M06_2X", "M06_2X,M06_2X"),
     ]);
+
+    pub static ref WHITELIST_NONLIBXC:HashMap<&'static str, ComponentType> = HashMap::from([
+        ("HF", ComponentType::HF),
+        // todo SR_HF
+        ("MP2", ComponentType::PT2),
+    ]);
+
+    pub static ref MULTISTEP:HashMap<String, XC2step> = load_json_functionals();
+
 }
 
-
+pub fn get_name(id: i32) -> String {
+    let name = unsafe{
+        let c_str = ffi::CStr::from_ptr(libxc::ffi_xc::xc_functional_get_name(id));
+        c_str.to_str().unwrap().to_owned()
+    };
+    name.to_uppercase()
+}
 
 pub fn get_available_functionals() -> HashMap<String, i32> {
     let n = unsafe{libxc::ffi_xc::xc_number_of_functionals()};
@@ -98,4 +150,29 @@ pub fn get_available_functionals() -> HashMap<String, i32> {
     }
     // println!("Available functionals: {:?}", available_functionals);
     available_functionals
+}
+
+#[derive(Clone,PartialEq,Debug)]
+pub struct XC2step {
+    pub code_scf: String,
+    pub code: String,
+    pub reference: String,
+}
+
+pub fn load_json_functionals() -> HashMap<String, XC2step> {
+    let json_str = include_str!("./family_xdh.json");
+    // load data from json_str, then construct HashMap<String, XC2step>
+    let v: serde_json::Value = serde_json::from_str(json_str).unwrap();
+    let mut map = HashMap::new();
+    if let serde_json::Value::Object(obj) = v {
+        for (key, value) in obj {
+            if let serde_json::Value::Object(inner_obj) = value {
+                let code_scf = inner_obj.get("code_scf").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let code = inner_obj.get("code").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let reference = inner_obj.get("ref").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                map.insert(key, XC2step { code_scf, code, reference });
+            }
+        }
+    }
+    map
 }
