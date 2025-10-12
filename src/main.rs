@@ -5,7 +5,7 @@ use lazy_static::lazy_static;
 mod libxc;
 mod xc_helper;
 use xc_helper::{AVAIL_FUNC, ALIAS, CODES, WHITELIST_NONLIBXC, ComponentType, 
-    get_name, MULTISTEP, XC2step};
+    get_name, MULTISTEP};
 
 fn main() {
     // println!("Hello, world!");
@@ -120,15 +120,34 @@ impl DFAComponent {
                 panic!("Error: functional {} has illegal prefix for type {}", self.func, functype);
             }
         }
-        // if self.func starts with prefix, remove it
-        let mut tmp_func = self.func.clone();
-        if self.func.starts_with(&prefix) {
-            tmp_func = self.func.trim_start_matches(&prefix).to_string();
+        // check if self.func starts with any key in POSSIBLE_PREFIX
+        // let mut tmp_func = self.func.clone();
+        let mut possible_full_names = Vec::new();
+        for (short, prefixes) in POSSIBLE_PREFIX.iter() {
+            if self.func.starts_with(short) {
+                let current_prefix = format!("{}_", short);
+                let cutted_name = self.func.trim_start_matches(&current_prefix);
+                for p in prefixes.iter() {
+                    let full_name = format!("{}{}", p, cutted_name);
+                    possible_full_names.push(full_name);
+                }
+                break;
+            }
         }
-        // generate all possible full names
-        let possible_full_names: Vec<String> = possible_complete_prefix.iter().map(|p| {
-            format!("{}{}", p, tmp_func)
-        }).collect();
+        // if not, try to add prefix
+        if possible_full_names.is_empty() {
+            for p in possible_complete_prefix.iter() {
+                let full_name = format!("{}{}", p, self.func);
+                possible_full_names.push(full_name);
+            }
+        }      
+        // if self.func.starts_with(&prefix) {
+        //     tmp_func = self.func.trim_start_matches(&prefix).to_string();
+        // }
+        // // generate all possible full names
+        // let possible_full_names: Vec<String> = possible_complete_prefix.iter().map(|p| {
+        //     format!("{}{}", p, tmp_func)
+        // }).collect();
         // search in AVAIL_FUNC
         let matches: Vec<_> = possible_full_names.into_iter()
             .filter(|name| AVAIL_FUNC.contains_key(name))
@@ -142,13 +161,57 @@ impl DFAComponent {
             self.id = *AVAIL_FUNC.get(&self.func_full_name).unwrap();
             self.component_type = ComponentType::Libxc;
         } else {
-            panic!("Error: functional {} is ambiguous, possible matches: {:?}", tmp_func, matches);
+            panic!("Error: functional {} is ambiguous, possible matches: {:?}", self.func, matches);
         }
         // end of condition 2,3
+
+        // println!("After to_valid_name: {}", self.formatted_output());
         
         return self;
     }
     
+}
+
+trait Addable {
+    fn is_addable_with(&self, other: &Self) -> bool;
+}
+
+impl Addable for DFAComponent {
+    fn is_addable_with(&self, other: &Self) -> bool {
+        if self.component_type != other.component_type {
+            return false;
+        }
+        if self.id != other.id {
+            return false;
+        }
+        // todo: more precise check for parameters
+        if self.param_keyword != other.param_keyword {
+            return false;
+        }
+        if self.param_positional != other.param_positional {
+            return false;
+        }
+        true
+    }
+}
+
+impl std::ops::Add for DFAComponent {
+    type Output = DFAComponent;
+
+    fn add(self, other: DFAComponent) -> DFAComponent {
+        // if !self.is_addable_with(&other) {
+        //     panic!("Error: cannot add two different DFAComponents");
+        // }
+        DFAComponent {
+            factor: self.factor + other.factor,
+            func: self.func.clone(),
+            func_full_name: self.func_full_name.clone(),
+            id: self.id,
+            param_positional: self.param_positional.clone(),
+            param_keyword: self.param_keyword.clone(),
+            component_type: self.component_type.clone(),
+        }
+    }
 }
 
 lazy_static! {
@@ -160,7 +223,8 @@ lazy_static! {
     static ref ILLEGAL_SHORT_PREFIX: HashMap<&'static str, Vec<&'static str>> = HashMap::from([
         ("X", vec!["C_", "XC_"]),
         ("C", vec!["X_", "XC_"]),
-        ("XC", vec!["X_", "C_"]),
+        // ("XC", vec!["X_", "C_"]),
+        ("XC", vec![]),
         ("any", vec![]),
     ]);
 }
@@ -178,8 +242,10 @@ pub fn get_possible_prefix(functype: &str) -> (Vec<&'static str>, Vec<&'static s
         illegal_prefix.extend(POSSIBLE_PREFIX.get("XC").unwrap().clone());
     } else if functype == "XC" {
         possible_prefix = POSSIBLE_PREFIX.get("XC").unwrap().clone();
-        illegal_prefix = POSSIBLE_PREFIX.get("X").unwrap().clone();
-        illegal_prefix.extend(POSSIBLE_PREFIX.get("C").unwrap().clone());
+        // illegal_prefix = POSSIBLE_PREFIX.get("X").unwrap().clone();
+        // illegal_prefix.extend(POSSIBLE_PREFIX.get("C").unwrap().clone());
+        possible_prefix.extend(POSSIBLE_PREFIX.get("X").unwrap().clone());
+        possible_prefix.extend(POSSIBLE_PREFIX.get("C").unwrap().clone());
     } else if functype == "any" {
         possible_prefix = POSSIBLE_PREFIX.get("X").unwrap().clone();
         possible_prefix.extend(POSSIBLE_PREFIX.get("C").unwrap().clone());
@@ -270,7 +336,8 @@ pub fn parse(xc: &str) -> ParsedResult {
         };
         return ParsedResult::DFA2step(dfa_steps);
     } else {
-        let final_components = parse_1step(xc);
+        let mut final_components = parse_1step(xc);
+        final_components = merge_components(final_components);
         final_components.iter().for_each(|c| {
             println!("{}", c.formatted_output());
         });
@@ -311,6 +378,24 @@ pub fn parse_1step(xc: &str) -> Vec<DFAComponent> {
         final_components.extend(xc_components);
     }
     final_components
+}
+
+pub fn merge_components(components: Vec<DFAComponent>) -> Vec<DFAComponent> {
+    let mut merged: Vec<DFAComponent> = Vec::new();
+    for comp in components {
+        let mut found = false;
+        for m in merged.iter_mut() {
+            if m.is_addable_with(&comp) {
+                *m = m.clone() + comp.clone();
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            merged.push(comp);
+        }
+    }
+    merged
 }
 
 pub fn parse_pass1(xc: &str) -> (String, Vec<String>) {
@@ -483,4 +568,36 @@ fn test_pass3_lincomb() {
     let (fac, funcs, _params) = parse_pass3(input, &param_captures);
     assert_eq!(fac, vec![1.0, 0.5, -0.5, 1.0, -1.0, 0.111, -21.0]);
     assert_eq!(funcs, vec!["K1", "K2", "K3", "K4", "K5", "K6", "K_7"]);
+}
+
+#[test]
+fn test_parse_xc_merge() {
+    let input1 = "BLYP + 0.1*X_B88";
+    let final_components = parse_1step(input1);
+    let merged = merge_components(final_components);
+    assert_eq!(merged.len(), 2);
+    assert_eq!(merged[0].factor, 1.1);
+    assert_eq!(merged[0].id, 106);
+    let input2 = "BLYP + 0.1*LYP";
+    let final_components2 = parse_1step(input2);
+    let merged2 = merge_components(final_components2);
+    assert_eq!(merged2.len(), 2);
+    assert_eq!(merged2[1].factor, 1.1);
+}
+
+#[test]
+fn test_parse_xc_simple() {
+    let input1 = "APBE,";
+    let final_components = parse_1step(input1);
+    assert_eq!(final_components.len(), 1);
+    assert_eq!(final_components[0].id, 184);
+    let input2 = "LDA0";
+    let final_components2 = parse_1step(input2);
+    assert_eq!(final_components2[0].id, 177);
+    let input3 = "Xpbe,";
+    let final_components3 = parse_1step(input3);
+    assert_eq!(final_components3[0].id, 123);
+    let input4 = "gga_x_pbe_gaussian";
+    let final_components4 = parse_1step(input4);
+    assert_eq!(final_components4[0].id, 321);
 }

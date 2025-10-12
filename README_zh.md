@@ -13,6 +13,9 @@ xc String 可以由`,`分割为两个区域，或只有一个区域，不可以�
 
 例如 `PBE - 0.1*B88 + 23.45*PBEsol`。
 
+暂不支持科学计数法。
+暂不支持以 id 代替泛函名称。
+
 ## 三级结构
 对于每个泛函 component，做如下规定。
 ### 名字
@@ -31,7 +34,7 @@ component_type: Libxc factor: 1, func: B88, func_full_name: GGA_X_B88, id: 106
 component_type: Libxc factor: 1, func: LYP, func_full_name: GGA_C_LYP, id: 131
 ```
 4. 其他常规 libxc 泛函
-* 可以是 libxc full name。例如`GGA_X_PBE`。但在 exchange 区域不能出现 correlation 类型的名字，反之亦然。
+* 可以是 libxc full name。例如`GGA_X_PBE`。但在 X 区域不能出现 C 类型的名字，反之亦然。XC 区域可以出现 X 或 C 类型。
 * 可以带前缀 `X_`, `C_`, `XC_`。同样，不能出现和区域不符的前缀。
 * 可以不带前缀，例如`PBE`。根据其所处的区域，视为带有 `X_`, `C_` 或 `XC_`前缀。
 对于此类和上一类情况，将从所有可能的 full name 中查询匹配的名字。若有多个匹配的结果则报错。
@@ -54,15 +57,13 @@ component_type: Libxc factor: 0.19, func: VWN3, func_full_name: LDA_C_VWN_RPA, i
 > parse_xc "0.5*PBE + 0.5*B88, X_PBE" 
 Error: functional X_PBE has illegal prefix for type C
 ```
-虽然存在泛函 `LDA_X_YUKAWA`，但是此处声明在 XC 区域而非 X 区域，所以找不到（这个行为与 pyscf 一致）
-```bash
-> parse_xc "B3LYP + YUKAWA"
-Error: functional YUKAWA not found in libxc
-```
+
+含'-'的变体的解析，待实现。
+
 ### 参数
 每个 component 可以有参数，置于`()`内。形式只能是 positional 或 keyword 其中的一种（前者为`(0.3,0.4)`，后者为`(a=0.3,b=0.4)`）。
 
-
+## 结果
 以上就完成了单步泛函的解析。其解析结果为 `Vec<DFAComponent>`。
 ```rust
 pub struct DFAComponent {
@@ -83,6 +84,13 @@ pub enum ComponentType {
     Libxc,
     Unknown,
 }
+```
+
+完成解析后会进行一次合并同类项，例如
+```bash
+> parse_xc "BLYP + 0.1*LYP"
+component_type: Libxc factor: 1, func: B88, func_full_name: GGA_X_B88, id: 106
+component_type: Libxc factor: 1.1, func: LYP, func_full_name: GGA_C_LYP, id: 131
 ```
 
 ## 杂化泛函
