@@ -4,8 +4,10 @@ use std::collections::HashMap;
 use lazy_static::lazy_static;
 mod libxc;
 mod xc_helper;
-use xc_helper::{AVAIL_FUNC, ALIAS, CODES, WHITELIST_NONLIBXC, ComponentType, 
+use xc_helper::{AVAIL_FUNC, ALIAS, CODES, WHITELIST_NONLIBXC, NAME_WITH_DASH, NAME_WITHOUT_UNDERSCORE,
+    ComponentType, 
     get_name, MULTISTEP};
+
 
 fn main() {
     // println!("Hello, world!");
@@ -30,7 +32,6 @@ pub struct DFAComponent {
 }
 
 // const WHITELIST_NONDFA:[&str;2] = ["MP2", "HF"];
-
 
 impl DFAComponent {
     pub fn new(factor: f64, func: String) -> Self {
@@ -71,7 +72,12 @@ impl DFAComponent {
         self.component_type == ComponentType::Unknown
     }
 
-    pub fn to_valid_name(&mut self, functype: &str) -> &mut Self {
+    pub fn is_nonlibxc(&self) -> bool {
+        // HF, PT2, RPA, SBGE2
+        self.component_type != ComponentType::Libxc && self.component_type != ComponentType::Unknown
+    }
+
+    pub fn check_whitelist(&mut self, functype: &str) -> &mut Self {
         // check whitelist
         if WHITELIST_NONLIBXC.contains_key(self.func.as_str()) {
             self.component_type = WHITELIST_NONLIBXC.get(self.func.as_str()).unwrap().clone();
@@ -85,7 +91,9 @@ impl DFAComponent {
             self.component_type = ComponentType::Libxc;
             return self;
         }
-
+        return self;
+    }
+    pub fn to_valid_name(&mut self, functype: &str) -> &mut Self {
         // search libxc full name
         // let prefix = format!("{}_", functype);
         let prefix = format!("{}_", functype);
@@ -269,28 +277,34 @@ pub fn check_type_sanity(name: &str, functype: &str) -> bool {
 
 pub fn parse_tokens(mut components: Vec<DFAComponent>, functype: &str) -> Vec<DFAComponent> {
     let mut result = Vec::new();
+    let allow_alias = functype == "XC" || functype == "any";
     for comp in components.iter_mut() {
-        comp.to_valid_name(functype);
+        // comp.to_valid_name(functype);
+        comp.check_whitelist(functype);
         
-        if !comp.is_unknown() {
+        if comp.is_nonlibxc() {
             result.push(comp.clone());
-        } else if ALIAS.contains_key(comp.func.as_str()) {
+        } else if allow_alias && ALIAS.contains_key(comp.func.as_str()) {
             if comp.has_parameter() {
                 panic!("Error: functional {} has parameters, cannot be filtered by alias", comp.func);
             }
             let alias_xc = ALIAS.get(comp.func.as_str()).unwrap();
             // check if X func is aliased to XC
-            if !check_type_sanity(alias_xc, functype) {
-                panic!("Error: functional {} is aliased to a different type, which is not allowed in type {}", comp.func, functype);
-            }
+            // if !check_type_sanity(alias_xc, functype) {
+            //     panic!("Error: functional {} is aliased to a different type, which is not allowed in type {}", comp.func, functype);
+            // }
             let alias_components = parse_1step(alias_xc);
             for mut alias_comp in alias_components {
                 alias_comp.factor *= comp.factor;
                 result.push(alias_comp);
             }   
         } else {
-            // result.push(comp.clone());
-            panic!("Error: functional {} not found in libxc and not in alias/whitelist", comp.func);
+            comp.to_valid_name(functype);
+            if !comp.is_unknown() {
+                result.push(comp.clone());
+            } else {
+                panic!("Error: functional {} not found in libxc and not in alias/whitelist", comp.func);
+            }
         }
     }
     // for comp in result.iter_mut() {
@@ -347,8 +361,22 @@ pub fn parse(xc: &str) -> ParsedResult {
 }
 
 pub fn parse_1step(xc: &str) -> Vec<DFAComponent> {
-    // let available_functionals = get_available_functionals();
-    let (xc_pass1, captures) = parse_pass1(xc);
+    // replace dash in name by searching NAME_WITH_DASH
+    let mut xc = xc.to_uppercase();
+    if xc.contains('-') {
+        for (name_with_dash, name_without_dash) in NAME_WITH_DASH.iter() {
+            // if xc.contains(name_with_dash) {
+            xc = xc.replace(name_with_dash, name_without_dash);
+            // }
+        }
+    }
+    // replace non-underscore name by searching NAME_WITHOUT_UNDERSCORE
+    for (name_without_underscore, name_with_underscore) in NAME_WITHOUT_UNDERSCORE.iter() {
+        if xc.contains(name_without_underscore) {
+            xc = xc.replace(name_without_underscore, name_with_underscore);
+        }
+    }
+    let (xc_pass1, captures) = parse_pass1(&xc);
     let parts = parse_pass2(&xc_pass1);
     let mut final_components:Vec<DFAComponent> = Vec::new();
     if parts.len() == 2 {
@@ -453,7 +481,8 @@ pub fn parse_pass3(xc: &str, param_captures: &Vec<String>) -> (Vec<f64>, Vec<Str
             cap1.parse::<f64>().unwrap()
         };
         fac.push(factor);
-        funcs.push(cap[2].to_string().to_uppercase());
+        funcs.push(cap[2].to_string()//.to_uppercase()
+            );
     }
     // println!("pass3");
     // println!("factors: {:?}", fac);
@@ -469,7 +498,7 @@ pub fn parse_pass3(xc: &str, param_captures: &Vec<String>) -> (Vec<f64>, Vec<Str
                 if index == 0 || index > param_captures.len() {
                     panic!("Error: index out of range in func {}", func);
                 }
-                params.push(param_captures[index - 1].clone());
+                params.push(param_captures[index - 1].to_lowercase());
                 *func = key.to_string();
             } else {
                 panic!("Error: invalid func format {}", func);
@@ -600,4 +629,24 @@ fn test_parse_xc_simple() {
     let input4 = "gga_x_pbe_gaussian";
     let final_components4 = parse_1step(input4);
     assert_eq!(final_components4[0].id, 321);
+}
+
+#[test]
+fn test_parse_xc_dash() {
+    let input1 = "M06-L";
+    let final_components = parse_1step(input1);
+    assert_eq!(final_components.len(), 2);
+    assert_eq!(final_components[0].id, 203);
+    assert_eq!(final_components[1].id, 233);
+    let input2 = "m06-l,m06-2x";
+    let final_components2 = parse_1step(input2);
+    assert_eq!(final_components2.len(), 2);
+}
+
+// mean to fail
+#[test]
+#[should_panic]
+fn test_parse_xc_fail() {
+    let input1 = "B3LYP,";
+    let _final_components = parse_1step(input1);
 }

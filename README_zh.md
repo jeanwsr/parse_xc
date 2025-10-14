@@ -13,6 +13,8 @@ xc String 可以由`,`分割为两个区域，或只有一个区域，不可以�
 
 例如 `PBE - 0.1*B88 + 23.45*PBEsol`。
 
+通常来说，各项之间的空格可加可不加。但对于特殊情况，例如把 `M06 - HF` 写成 `M06-HF`，则会被认为是一个泛函 `M06_HF`。
+
 暂不支持科学计数法。
 暂不支持以 id 代替泛函名称。
 
@@ -58,7 +60,10 @@ component_type: Libxc factor: 0.19, func: VWN3, func_full_name: LDA_C_VWN_RPA, i
 Error: functional X_PBE has illegal prefix for type C
 ```
 
-含'-'的变体的解析，待实现。
+名字的特殊情况：
+* 含`-`，例如`M06-2X`。此时最推荐的写法是`M06_2X`（符合 libxc 标准，不会有解析错误的可能），其次是`M062X`，再次是`M06-2X`。
+  后两者目前也是支持的，作为 ALIAS。但由于属于特殊情况（可能产生与减号相混的歧义），当用户不清楚是否定义了此种 ALIAS 时，建议不要采用第三种写法。
+* 含`_`。在 pyscf 中，对于 libxc 的含`_`的泛函，支持全部省去`_`的写法，例如`PBEERFGWS`和`PBE_ERF_GWS`等价。目前我没有做这种处理，只允许少量特殊情况省略`_`。如`CAMB3LYP`,`M06L`。
 
 ### 参数
 每个 component 可以有参数，置于`()`内。形式只能是 positional 或 keyword 其中的一种（前者为`(0.3,0.4)`，后者为`(a=0.3,b=0.4)`）。
