@@ -8,6 +8,7 @@ use super::libxc::{XcFuncType,LibXCFamily};
 use super::xc_helper::{AVAIL_FUNC, ALIAS, CODES, WHITELIST_NONLIBXC, NAME_WITH_DASH, NAME_WITHOUT_UNDERSCORE,
     ComponentType, 
     get_name, MULTISTEP};
+use assert_float_eq::{assert_f64_near};
 
 #[derive(Clone)]
 pub struct DFAComponent {
@@ -310,15 +311,15 @@ pub fn get_possible_prefix(functype: &str) -> (Vec<&'static str>, Vec<&'static s
     (possible_prefix, illegal_prefix)
 }
 
-pub fn check_type_sanity(name: &str, functype: &str) -> bool {
-    let mut sanity = true;
-    let parts: Vec<&str> = name.split(',').collect();
-    let n_part_notempty = parts.iter().filter(|p| !p.trim().is_empty()).count();
-    if (functype == "X" || functype == "C") && n_part_notempty > 1 {
-        sanity =  false;
-    }
-    sanity
-}
+// pub fn check_type_sanity(name: &str, functype: &str) -> bool {
+//     let mut sanity = true;
+//     let parts: Vec<&str> = name.split(',').collect();
+//     let n_part_notempty = parts.iter().filter(|p| !p.trim().is_empty()).count();
+//     if (functype == "X" || functype == "C") && n_part_notempty > 1 {
+//         sanity =  false;
+//     }
+//     sanity
+// }
 
 
 pub fn parse_tokens(mut components: Vec<DFAComponent>, functype: &str) -> Vec<DFAComponent> {
@@ -618,12 +619,12 @@ fn test_parse_xc_param() {
     let input1 = "0.5*PBE + 0.5*B88, PBE(_beta=0.1)";
     let final_components = parse_1step(input1);
     assert_eq!(final_components.len(), 3);
-    assert_eq!(final_components[0].factor, 0.5);
+    assert_f64_near!(final_components[0].factor, 0.5, 9);
     assert_eq!(final_components[0].id, 101);
     assert_eq!(final_components[1].id, 106);
     assert_eq!(final_components[2].factor, 1.0);
     assert_eq!(final_components[2].id, 130);
-    assert!(final_components[2].param_keyword.get("_beta").unwrap() - 0.1 < 1e-9);
+    assert_f64_near!(final_components[2].param_keyword.get("_beta").unwrap().clone(), 0.1, 9);
 }
 
 #[test]
@@ -637,6 +638,12 @@ fn test_parse_xc_hybrid() {
     assert_eq!(final_components[2].id, 106);
     assert_eq!(final_components[3].id, 131);
     assert_eq!(final_components[4].id, 8);
+    let input2 = "B3LYP";
+    let final_dfa = parse(input2);
+    assert_f64_near!(final_dfa.get_hybrid(0), 0.2, 9);
+    let input3 = "0.2*HF + 0.5*B3LYP";
+    let final_dfa3 = parse(input3);
+    assert_f64_near!(final_dfa3.get_hybrid(0), 0.3, 9);
 }
 
 #[test]
@@ -654,13 +661,13 @@ fn test_parse_xc_merge() {
     let final_components = parse_1step(input1);
     let merged = merge_components(final_components);
     assert_eq!(merged.len(), 2);
-    assert_eq!(merged[0].factor, 1.1);
+    assert_f64_near!(merged[0].factor, 1.1, 9);
     assert_eq!(merged[0].id, 106);
     let input2 = "BLYP + 0.1*LYP";
     let final_components2 = parse_1step(input2);
     let merged2 = merge_components(final_components2);
     assert_eq!(merged2.len(), 2);
-    assert_eq!(merged2[1].factor, 1.1);
+    assert_f64_near!(merged2[1].factor, 1.1, 9);
 }
 
 #[test]

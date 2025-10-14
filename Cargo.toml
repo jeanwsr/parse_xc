@@ -8,6 +8,7 @@ regex = "*"
 #rest_tensors = {path="/home/wsr/rest_workspace/rest_tensors"}
 lazy_static = "*"
 serde_json = "*"
+assert_float_eq = "1"
 
 [build-dependencies]
 dunce = "*"

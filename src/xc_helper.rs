@@ -178,6 +178,9 @@ lazy_static! {
         ("HF", ComponentType::HF),
         // todo SR_HF
         ("MP2", ComponentType::PT2),
+        ("RPA", ComponentType::RPA),
+        ("SCSRPA", ComponentType::SCSRPA),
+        ("SIEPA", ComponentType::SBGE2),
     ]);
 
     pub static ref MULTISTEP:HashMap<String, XC2step> = load_json_functionals();
