@@ -34,9 +34,9 @@ impl ComponentType {
 }
 
 lazy_static! {
-    pub static ref AVAIL_FUNC : HashMap<String, i32> = get_available_functionals();
+    pub static ref AVAIL_FUNC : HashMap<String, usize> = get_available_functionals();
 
-    pub static ref CODES: HashMap<&'static str, i32> = HashMap::from([
+    pub static ref CODES: HashMap<&'static str, usize> = HashMap::from([
         // LDA
         ("LDA", 1),
         ("SLATER", 1),
@@ -184,15 +184,15 @@ lazy_static! {
 
 }
 
-pub fn get_name(id: i32) -> String {
+pub fn get_name(id: usize) -> String {
     let name = unsafe{
-        let c_str = ffi::CStr::from_ptr(libxc::ffi_xc::xc_functional_get_name(id));
+        let c_str = ffi::CStr::from_ptr(libxc::ffi_xc::xc_functional_get_name(id as i32));
         c_str.to_str().unwrap().to_owned()
     };
     name.to_uppercase()
 }
 
-pub fn get_available_functionals() -> HashMap<String, i32> {
+pub fn get_available_functionals() -> HashMap<String, usize> {
     let n = unsafe{libxc::ffi_xc::xc_number_of_functionals()};
     // println!("Number of functionals in libxc: {}", n);
     // empty vector with length n
@@ -207,7 +207,7 @@ pub fn get_available_functionals() -> HashMap<String, i32> {
             let c_str = ffi::CStr::from_ptr(libxc::ffi_xc::xc_functional_get_name(id));
             c_str.to_str().unwrap().to_owned()
         };
-        available_functionals.insert(name.to_uppercase(), id);
+        available_functionals.insert(name.to_uppercase(), id as usize);
     }
     // println!("Available functionals: {:?}", available_functionals);
     available_functionals

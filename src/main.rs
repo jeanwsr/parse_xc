@@ -3,6 +3,7 @@ use regex;
 use std::collections::HashMap;
 use lazy_static::lazy_static;
 mod libxc;
+use libxc::{XcFuncType,LibXCFamily};
 mod xc_helper;
 use xc_helper::{AVAIL_FUNC, ALIAS, CODES, WHITELIST_NONLIBXC, NAME_WITH_DASH, NAME_WITHOUT_UNDERSCORE,
     ComponentType, 
@@ -16,6 +17,8 @@ fn main() {
     let name = &args[1];
     // println!("parsing xc: {}", name);
     let final_results = parse(name);
+    // println!("{}", final_results.formatted_output());
+    final_results.summary();
 }
 
 
@@ -25,7 +28,7 @@ pub struct DFAComponent {
     pub factor: f64,
     pub func: String,
     pub func_full_name: String,
-    pub id: i32,
+    pub id: usize,
     pub param_positional: Vec<f64>,
     pub param_keyword: HashMap<String, f64>,
     pub component_type: ComponentType,
@@ -48,7 +51,7 @@ impl DFAComponent {
 
     pub fn formatted_output(&self) -> String {
         // output line by line
-        let mut result = format!("component_type: {} factor: {}, func: {}", self.component_type.as_str(), self.factor, self.func);
+        let mut result = format!("component_type: {}, factor: {}, func: {}", self.component_type.as_str(), self.factor, self.func);
         if !self.func_full_name.is_empty() {
             result.push_str(&format!(", func_full_name: {}", self.func_full_name));
         }
@@ -177,6 +180,23 @@ impl DFAComponent {
         
         return self;
     }
+
+    pub fn get_hybrid(&self, spin_channel: usize) -> f64 {
+        if self.component_type == ComponentType::HF {
+            return self.factor;
+        } else if self.component_type == ComponentType::Libxc {
+            let xcfunc = XcFuncType::xc_func_init(self.id, spin_channel);
+            match xcfunc.xc_func_family {
+                LibXCFamily::HybridGGA | LibXCFamily::HybridMGGA => {
+                    let hyb = xcfunc.xc_hyb_exx_coeff();
+                    return self.factor * hyb;
+                },
+                _ => return 0.0,
+            }
+        } else {
+            return 0.0;
+        }
+    }
     
 }
 
@@ -219,6 +239,46 @@ impl std::ops::Add for DFAComponent {
             param_keyword: self.param_keyword.clone(),
             component_type: self.component_type.clone(),
         }
+    }
+}
+
+pub struct DFAdef {
+    pub xc_scf: Option<Vec<DFAComponent>>,
+    pub xc: Vec<DFAComponent>,
+    pub reference: Vec<String>,
+}
+
+impl DFAdef {
+    pub fn formatted_output(&self) -> String {
+        let mut result = String::new();
+        if let Some(scf_components) = &self.xc_scf {
+            result.push_str("SCF components:\n");
+            for comp in scf_components {
+                result.push_str(&format!("  {}\n", comp.formatted_output()));
+            }
+        }
+        result.push_str("Final energy components:\n");
+        for comp in &self.xc {
+            result.push_str(&format!("  {}\n", comp.formatted_output()));
+        }
+        if !self.reference.is_empty() {
+            result.push_str("References:\n");
+            for r in &self.reference {
+                result.push_str(&format!("  {}\n", r));
+            }
+        }
+        result
+    }
+    
+    pub fn get_hybrid(&self, spin_channel: usize) -> f64 {
+        // sum up all hybrid components in self.xc
+        self.xc.iter().map(|c| c.get_hybrid(spin_channel)).sum()
+    }
+
+    pub fn summary(&self) {
+        println!("{}", self.formatted_output());
+        let hyb_0 = self.get_hybrid(0);
+        println!("Total hybrid: {}", hyb_0);
     }
 }
 
@@ -313,18 +373,14 @@ pub fn parse_tokens(mut components: Vec<DFAComponent>, functype: &str) -> Vec<DF
     result
 }
 
-pub enum ParsedResult {
-    VecDFAComponent(Vec<DFAComponent>),
-    DFA2step(DFA2step),
-}
+// pub enum ParsedResult {
+//     VecDFAComponent(Vec<DFAComponent>),
+//     DFA2step(DFA2step),
+// }
 
-pub struct DFA2step {
-    pub xc_scf: Vec<DFAComponent>,
-    pub xc: Vec<DFAComponent>,
-    pub reference: String,
-}
 
-pub fn parse(xc: &str) -> ParsedResult {
+
+pub fn parse(xc: &str) -> DFAdef {
     println!("Parsing xc: {}", xc);
     // check MULTISTEP
     if MULTISTEP.contains_key(xc) {
@@ -332,30 +388,37 @@ pub fn parse(xc: &str) -> ParsedResult {
         println!("Detected multi-step functional {}, which is parsed to:", xc);
         println!("Step for SCF         : {}", steps.code_scf);
         println!("Step for final energy: {}", steps.code);
-        println!("Reference: {}", steps.reference);
+        // println!("Reference: {}", steps.reference);
         let final_components_scf = parse_1step(&steps.code_scf);
-        println!("Components for SCF:");
-        final_components_scf.iter().for_each(|c| {
-            println!("{}", c.formatted_output());
-        });
+        // println!("Components for SCF:");
+        // final_components_scf.iter().for_each(|c| {
+        //     println!("{}", c.formatted_output());
+        // });
         let final_components = parse_1step(&steps.code);
-        println!("Components for final energy:");
-        final_components.iter().for_each(|c| {
-            println!("{}", c.formatted_output());
-        });
-        let dfa_steps = DFA2step {
-            xc_scf: final_components_scf,
+        // println!("Components for final energy:");
+        // final_components.iter().for_each(|c| {
+        //     println!("{}", c.formatted_output());
+        // });
+        let mut reference = Vec::new();
+        reference.push(steps.reference.clone());
+        let dfa_steps = DFAdef {
+            xc_scf: Some(final_components_scf),
             xc: final_components,
-            reference: steps.reference.clone(),
+            reference: reference,
         };
-        return ParsedResult::DFA2step(dfa_steps);
+        return dfa_steps;
     } else {
         let mut final_components = parse_1step(xc);
         final_components = merge_components(final_components);
-        final_components.iter().for_each(|c| {
-            println!("{}", c.formatted_output());
-        });
-        return ParsedResult::VecDFAComponent(final_components);
+        // final_components.iter().for_each(|c| {
+        //     println!("{}", c.formatted_output());
+        // });
+        let dfa = DFAdef {
+            xc_scf: None,
+            xc: final_components,
+            reference: Vec::new(),
+        };
+        return dfa;
     }
 
 }
