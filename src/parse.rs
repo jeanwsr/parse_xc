@@ -184,6 +184,14 @@ impl DFAComponent {
             return 0.0;
         }
     }
+
+    pub fn get_reference(&self) -> String {
+        if self.component_type == ComponentType::Libxc && self.id != 0 {
+            todo!();
+        } else {
+            return String::new();
+        }
+    }
     
 }
 
