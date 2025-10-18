@@ -9,6 +9,7 @@ regex = "*"
 lazy_static = "*"
 serde_json = "*"
 assert_float_eq = "1"
+cached = "*"
 
 [build-dependencies]
 dunce = "*"

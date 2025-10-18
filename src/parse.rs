@@ -9,6 +9,7 @@ use super::xc_helper::{AVAIL_FUNC, ALIAS, CODES, WHITELIST_NONLIBXC, NAME_WITH_D
     ComponentType, 
     get_name, MULTISTEP};
 use assert_float_eq::{assert_f64_near};
+// use cached::proc_macro::cached;
 
 #[derive(Clone)]
 pub struct DFAComponent {
@@ -19,9 +20,9 @@ pub struct DFAComponent {
     pub param_positional: Vec<f64>,
     pub param_keyword: HashMap<String, f64>,
     pub component_type: ComponentType,
+    pub xcfunc: Option<XcFuncType>,
 }
 
-// const WHITELIST_NONDFA:[&str;2] = ["MP2", "HF"];
 
 impl DFAComponent {
     pub fn new(factor: f64, func: String) -> Self {
@@ -33,6 +34,7 @@ impl DFAComponent {
             param_positional: Vec::new(),
             param_keyword: HashMap::new(),
             component_type: ComponentType::Unknown,
+            xcfunc: None,
         }
     }
 
@@ -168,31 +170,56 @@ impl DFAComponent {
         return self;
     }
 
+    // #[cached]
     pub fn get_hybrid(&self, spin_channel: usize) -> f64 {
         if self.component_type == ComponentType::HF {
             return self.factor;
         } else if self.component_type == ComponentType::Libxc {
-            let xcfunc = XcFuncType::xc_func_init(self.id, spin_channel);
-            match xcfunc.xc_func_family {
-                LibXCFamily::HybridGGA | LibXCFamily::HybridMGGA => {
-                    let hyb = xcfunc.xc_hyb_exx_coeff();
-                    return self.factor * hyb;
-                },
-                _ => return 0.0,
-            }
+            let mut xcfunc = XcFuncType::xc_func_init(self.id, spin_channel);
+            let hyb =  self.factor * xcfunc.get_hybrid();
+            xcfunc.xc_func_end();
+            return hyb;
         } else {
             return 0.0;
         }
     }
 
-    pub fn get_reference(&self) -> String {
+    // pub fn get_reference(&self) -> String {
+    //     if self.component_type == ComponentType::Libxc && self.id != 0 {
+    //         todo!();
+    //     } else {
+    //         return String::new();
+    //     }
+    // }
+
+    // pub fn init_libxc(&mut self, spin_channel: usize) -> &mut Self {
+    //     if self.component_type == ComponentType::Libxc && self.id != 0 {
+    //         let xcfunc = XcFuncType::xc_func_init(self.id, spin_channel);
+    //         self.xcfunc = Some(xcfunc);
+    //     }
+    //     self
+    // }
+    pub fn init_libxc(&self, spin_channel: usize) -> Option<XcFuncType> {
         if self.component_type == ComponentType::Libxc && self.id != 0 {
-            todo!();
+            let xcfunc = XcFuncType::xc_func_init(self.id, spin_channel);
+            Some(xcfunc)
         } else {
-            return String::new();
+            None
         }
     }
     
+}
+
+impl XcFuncType {
+    pub fn get_hybrid(&self) -> f64 {
+        match self.xc_func_family {
+            LibXCFamily::HybridGGA | LibXCFamily::HybridMGGA => {
+                let hyb = self.xc_hyb_exx_coeff();
+                hyb
+            },
+            _ => 0.0,
+        }
+    }
 }
 
 trait Addable {
@@ -205,6 +232,10 @@ impl Addable for DFAComponent {
             return false;
         }
         if self.id != other.id {
+            return false;
+        }
+        // cannot add if any of them has xcfunc initialized
+        if self.xcfunc.is_some() || other.xcfunc.is_some() {
             return false;
         }
         // todo: more precise check for parameters
@@ -233,17 +264,30 @@ impl std::ops::Add for DFAComponent {
             param_positional: self.param_positional.clone(),
             param_keyword: self.param_keyword.clone(),
             component_type: self.component_type.clone(),
+            xcfunc: None,
         }
     }
 }
 
 pub struct DFAdef {
     pub xc_scf: Option<Vec<DFAComponent>>,
-    pub xc: Vec<DFAComponent>,
+    pub xc_nscf: Option<Vec<DFAComponent>>,
     pub reference: Vec<String>,
+    pub spin_channel: usize,
+    pub dfa_hybrid_scf: f64,
 }
 
 impl DFAdef {
+    pub fn new() -> Self {
+        DFAdef {
+            xc_scf: None,
+            xc_nscf: None,
+            reference: Vec::new(),
+            spin_channel: 1,
+            dfa_hybrid_scf: 0.0,
+        }
+    }
+
     pub fn formatted_output(&self) -> String {
         let mut result = String::new();
         if let Some(scf_components) = &self.xc_scf {
@@ -252,9 +296,11 @@ impl DFAdef {
                 result.push_str(&format!("  {}\n", comp.formatted_output()));
             }
         }
-        result.push_str("Final energy components:\n");
-        for comp in &self.xc {
-            result.push_str(&format!("  {}\n", comp.formatted_output()));
+        if let Some(nscf_components) = &self.xc_nscf {
+            result.push_str("Final energy components:\n");
+            for comp in nscf_components {
+                result.push_str(&format!("  {}\n", comp.formatted_output()));
+            }
         }
         if !self.reference.is_empty() {
             result.push_str("References:\n");
@@ -265,15 +311,93 @@ impl DFAdef {
         result
     }
     
-    pub fn get_hybrid(&self, spin_channel: usize) -> f64 {
+    // #[cached]
+    pub fn get_hybrid_scf(&self, spin_channel: usize) -> f64 {
         // sum up all hybrid components in self.xc
-        self.xc.iter().map(|c| c.get_hybrid(spin_channel)).sum()
+        if let Some(components) = &self.xc_scf {
+            components.iter()
+                .map(|comp| comp.get_hybrid(spin_channel))
+                .sum()
+        } else {
+            0.0
+        }
+    }
+
+    pub fn is_hybrid(&self) -> bool {
+        // todo: what if not initialized?
+        self.dfa_hybrid_scf.abs() >= 1e-6
+    }
+
+    pub fn is_fifth_dfa(&self) -> bool {
+        // check if any component in self.xc is a fifth rung functional
+        if let Some(components) = &self.xc_nscf {
+            for comp in components.iter() {
+                match comp.component_type {
+                    ComponentType::PT2 | ComponentType::RPA | ComponentType::SCSRPA | ComponentType::SBGE2 => {
+                        return true;
+                    },
+                    _ => {},
+                }
+            }
+        }
+        false
+    }
+
+    pub fn has_nscf(&self) -> bool {
+        self.xc_nscf.is_some()
     }
 
     pub fn summary(&self) {
         println!("{}", self.formatted_output());
-        let hyb_0 = self.get_hybrid(0);
+        println!("Info for SCF functional:");
+        let hyb_0 = self.get_hybrid_scf(1);
         println!("Total hybrid: {}", hyb_0);
+        // print references
+        // self.init_libxc();
+        // self.xc.iter().for_each(|c| {
+        //     if c.component_type == ComponentType::Libxc && c.id != 0 {
+        //         if let Some(xcfunc) = &c.init_libxc(1) {
+        //             xcfunc.xc_func_info_printout();
+        //         }
+        //     }
+        // });
+        self.scf_xcfunc_iter().for_each(|xcfunc| {
+            xcfunc.xc_func_info_printout();
+        });
+        println!("Info for final energy functional:");
+        self.nscf_xcfunc_iter().for_each(|xcfunc| {
+            xcfunc.xc_func_info_printout();
+        });
+    }
+
+    // pub fn init_libxc(&mut self) -> &mut Self {
+    //     for comp in self.xc.iter_mut() {
+    //         comp.init_libxc(self.spin_channel);
+    //     }
+    //     self
+    // }
+    pub fn nscf_xcfunc_iter(&self) -> impl Iterator<Item = XcFuncType> + '_ {
+        self.xc_nscf.as_ref().into_iter()
+            .flat_map(|components| {
+                components.iter()
+                    .filter_map(|component| component.init_libxc(self.spin_channel))
+            })
+    }
+
+    pub fn scf_xcfunc_iter(&self) -> impl Iterator<Item = XcFuncType> + '_ {
+        self.xc_scf.as_ref().into_iter()
+            .flat_map(|components| {
+                components.iter()
+                    .filter_map(|component| component.init_libxc(self.spin_channel))
+            })
+    }
+
+    pub fn use_density_gradient(&self) -> bool {
+        let scf_use_rhog = self.scf_xcfunc_iter().any(
+            |xcfunc| xcfunc.use_density_gradient());
+        let nscf_use_rhog = self.nscf_xcfunc_iter().any(
+            |xcfunc| xcfunc.use_density_gradient());
+        scf_use_rhog || nscf_use_rhog
     }
 }
 
@@ -373,10 +497,19 @@ pub fn parse_tokens(mut components: Vec<DFAComponent>, functype: &str) -> Vec<DF
 //     DFA2step(DFA2step),
 // }
 
+pub fn parse_and_derive(xc: &str, spin_channel: usize) -> DFAdef {
+    let mut dfa = parse(xc);
+    dfa.spin_channel = spin_channel;
+    // restore intermediate variables
+    // dfa.init_libxc();
+    dfa.dfa_hybrid_scf = dfa.get_hybrid_scf(spin_channel);
+    dfa
+}
 
 
 pub fn parse(xc: &str) -> DFAdef {
     println!("Parsing xc: {}", xc);
+    let mut dfa = DFAdef::new();
     // check MULTISTEP
     if MULTISTEP.contains_key(xc) {
         let steps = MULTISTEP.get(xc).unwrap();
@@ -396,26 +529,33 @@ pub fn parse(xc: &str) -> DFAdef {
         // });
         let mut reference = Vec::new();
         reference.push(steps.reference.clone());
-        let dfa_steps = DFAdef {
-            xc_scf: Some(final_components_scf),
-            xc: final_components,
-            reference: reference,
-        };
-        return dfa_steps;
+        // let dfa = DFAdef {
+        //     xc_scf: Some(final_components_scf),
+        //     xc: final_components,
+        //     reference: reference,
+        //     spin_channel: 1,
+        //     dfa_hybrid_scf: 0.0,
+        // };
+        dfa.xc_scf = Some(merge_components(final_components_scf));
+        dfa.xc_nscf = Some(merge_components(final_components));
+        dfa.reference = reference;
     } else {
         let mut final_components = parse_1step(xc);
         final_components = merge_components(final_components);
         // final_components.iter().for_each(|c| {
         //     println!("{}", c.formatted_output());
         // });
-        let dfa = DFAdef {
-            xc_scf: None,
-            xc: final_components,
-            reference: Vec::new(),
-        };
-        return dfa;
+        // let dfa = DFAdef {
+        //     xc_scf: None,
+        //     xc: final_components,
+        //     reference: Vec::new(),
+        //     spin_channel: 1,
+        //     dfa_hybrid_scf: 0.0,
+        // };
+        dfa.xc_scf = Some(final_components);
+        dfa.reference = Vec::new();
     }
-
+    dfa
 }
 
 pub fn parse_1step(xc: &str) -> Vec<DFAComponent> {
@@ -648,10 +788,33 @@ fn test_parse_xc_hybrid() {
     assert_eq!(final_components[4].id, 8);
     let input2 = "B3LYP";
     let final_dfa = parse(input2);
-    assert_f64_near!(final_dfa.get_hybrid(0), 0.2, 9);
+    assert_f64_near!(final_dfa.get_hybrid_scf(1), 0.2, 9);
     let input3 = "0.2*HF + 0.5*B3LYP";
     let final_dfa3 = parse(input3);
-    assert_f64_near!(final_dfa3.get_hybrid(0), 0.3, 9);
+    assert_f64_near!(final_dfa3.get_hybrid_scf(1), 0.3, 9);
+}
+
+#[test]
+fn test_is_hybrid() {
+    let input1 = "B3LYP";
+    let final_dfa = parse_and_derive(input1, 1);
+    assert!(final_dfa.is_hybrid());
+    let input2 = "PBE";
+    let final_dfa2 = parse_and_derive(input2, 1);
+    assert!(!final_dfa2.is_hybrid());
+}
+
+#[test]
+fn test_is_fifth_dfa() {
+    let input1 = "XYG3";
+    let final_dfa = parse_and_derive(input1, 1);
+    assert!(final_dfa.is_fifth_dfa());
+    // let input2 = "ZRPS";
+    // let final_dfa2 = parse_and_init(input2, 1);
+    // assert!(final_dfa2.is_fifth_dfa());
+    let input3 = "PBE0";
+    let final_dfa3 = parse_and_derive(input3, 1);
+    assert!(!final_dfa3.is_fifth_dfa());
 }
 
 #[test]

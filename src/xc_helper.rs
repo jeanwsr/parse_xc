@@ -224,9 +224,17 @@ pub struct XC2step {
 }
 
 pub fn load_json_functionals() -> HashMap<String, XC2step> {
-    let json_str = include_str!("./family_xdh.json");
+    let jsonfile = include_str!("./family_xdh.json");
+    let mut map1 = load_json(jsonfile);
+    let jsonfile2 = include_str!("./family_xdh_add.json");
+    map1.extend(load_json(jsonfile2));
+    map1
+}
+
+fn load_json(json_str: &str) -> HashMap<String, XC2step> {
+    // let json_str = std::fs::read_to_string(jsonfile).expect("Failed to read JSON file");
     // load data from json_str, then construct HashMap<String, XC2step>
-    let v: serde_json::Value = serde_json::from_str(json_str).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json_str).expect("Failed to parse JSON");
     let mut map = HashMap::new();
     if let serde_json::Value::Object(obj) = v {
         for (key, value) in obj {
